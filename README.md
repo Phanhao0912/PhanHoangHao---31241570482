@@ -1,151 +1,113 @@
 
-# ===========================================
-# 🍱 HỆ THỐNG NHẬN DIỆN MÓN ĂN + TÍNH TIỀN
-# ===========================================
+# 🥗 HỆ THỐNG NHẬN DIỆN MÓN ĂN VÀ TÍNH TIỀN TỰ ĐỘNG
 
-# CÀI ĐẶT THƯ VIỆN CẦN THIẾT
+Một hệ thống AI giúp tự động phát hiện các món ăn từ khay cơm, phân loại và tính tổng hóa đơn. Sử dụng YOLOv8 để phát hiện vật thể (tô/món ăn) và CNN để phân loại từng món cụ thể. Giao diện người dùng được thiết kế bằng Gradio trực quan, chạy trên Kaggle Notebook.
+
+---
+
+## 🚀 MỤC TIÊU
+
+- Tự động nhận diện các món ăn trong ảnh chụp khay cơm.
+- Phân loại món ăn bằng mô hình CNN đã huấn luyện.
+- Tính tiền từ file `menu.json` dựa theo từng món ăn đã phân loại.
+- Hiển thị kết quả trực quan với Gradio GUI.
+
+---
+
+## ⚙️ HƯỚNG DẪN CÀI ĐẶT (TRÊN KAGGLE)
+
+### 1. Bật GPU trong phần "Accelerator"
+- Chọn **Notebook Settings > Accelerator: GPU**
+
+### 2. Upload các file cần thiết:
+- `best_food_model.keras` – mô hình CNN phân loại món ăn.
+- `model.pt` – mô hình YOLO phát hiện món ăn trong từng tô.
+- `yolo11n.pt` – mô hình YOLO phát hiện các tô trên khay.
+- `menu.json` – file JSON chứa tên món ăn và giá tiền.
+- `*.jpg` – ảnh khay cơm để nhận diện.
+
+### 3. Cài đặt thư viện trong ô đầu tiên:
+```python
 !pip install -q ultralytics gradio tensorflow pillow opencv-python matplotlib
+```
 
-# ==== PHẦN 1: YOLO - Phát hiện món ăn ====
+---
 
-import os
-import cv2
-import shutil
-import matplotlib.pyplot as plt
-from ultralytics import YOLO
-from ultralytics.utils import SETTINGS
+## ▶️ HƯỚNG DẪN CHẠY CHƯƠNG TRÌNH
 
-# Thiết lập môi trường lưu log YOLO
-os.environ['YOLO_CACHE_DIR'] = '/kaggle/working/yolo_cache'
-SETTINGS.update({'runs_dir': '/kaggle/working/ultralytics_logs'})
+### 📍 Các bước xử lý:
+1. **YOLO 1 (`yolo11n.pt`)**: Phát hiện các tô trên khay.
+2. **YOLO 2 (`model.pt`)**: Phát hiện các món ăn trong từng tô.
+3. **CNN (`best_food_model.keras`)**: Phân loại món ăn đã crop.
+4. **Gradio**: Hiển thị ảnh, tên món, giá từng món và tổng tiền.
 
-# Đường dẫn ảnh và thư mục crop
-image_path = "/kaggle/input/foodtestproject/z6582828766338_58b7500b77e640b493268491c92456e0.jpg"
-image_name = os.path.splitext(os.path.basename(image_path))[0]
-bowl_crop_dir = "/kaggle/working/bowls_cropped"
-dish_crop_dir = "/kaggle/working/dishes_cropped"
-
-# Xóa dữ liệu cũ
-for path in [bowl_crop_dir, dish_crop_dir]:
-    shutil.rmtree(path, ignore_errors=True)
-    os.makedirs(path, exist_ok=True)
-
-# Load mô hình YOLO
-bowl_model = YOLO(shutil.copy("/kaggle/input/allmodeltrain/yolo11n.pt", "/kaggle/working/yolo11n.pt"))
-dish_model = YOLO(shutil.copy("/kaggle/input/allmodeltrain/model.pt", "/kaggle/working/model.pt"))
-
-# Đọc ảnh khay
-img = cv2.imread(image_path)
-
-# Nhận diện các tô món ăn
-bowl_results = bowl_model.predict(source=image_path, conf=0.3)
-
-print("🔍 Đã phát hiện các tô món ăn:")
-for r in bowl_results:
-    for idx, box in enumerate(r.boxes):
-        cls_id = int(box.cls[0])
-        class_name = bowl_model.names[cls_id].lower()
-        conf = float(box.conf[0])
-        if "bowl" not in class_name:
-            continue
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        crop = img[y1:y2, x1:x2]
-        crop_name = f"{image_name}_bowl_{idx}_conf{conf:.2f}.jpg"
-        cv2.imwrite(os.path.join(bowl_crop_dir, crop_name), crop)
-
-# Tách món từ mỗi tô
-print("\n🍽️ Đang nhận diện món ăn từ các tô...")
-
-for fname in sorted(os.listdir(bowl_crop_dir)):
-    if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
-        continue
-    bowl_path = os.path.join(bowl_crop_dir, fname)
-    bowl_img = cv2.imread(bowl_path)
-    bowl_name = os.path.splitext(fname)[0]
-
-    dish_results = dish_model.predict(source=bowl_path, conf=0.3)
-
-    for r in dish_results:
-        for idx, box in enumerate(r.boxes):
-            cls_id = int(box.cls[0])
-            class_name = dish_model.names[cls_id]
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            crop = bowl_img[y1:y2, x1:x2]
-            crop_name = f"{bowl_name}_dish_{class_name}_{idx}_conf{conf:.2f}.jpg"
-            cv2.imwrite(os.path.join(dish_crop_dir, crop_name), crop)
-
-# ==== PHẦN 2: CNN - Nhận diện & tính tiền ====
-
-import gradio as gr
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-import numpy as np
-from PIL import Image
-import json
-
-# Tắt sử dụng GPU
-tf.config.set_visible_devices([], 'GPU')
-
-# Load model CNN và menu
-cnn_model = load_model("/kaggle/input/allmodeltrain/best_food_model.keras")
-with open("/kaggle/input/menuueh/menu.json", "r", encoding="utf-8") as f:
-    menu = json.load(f)
-
-class_names = list(menu.keys())
-
-# Hàm xử lý nhận diện toàn bộ ảnh
+### 📌 Hàm chính được gọi bởi nút Gradio:
+```python
 def process_all_dishes(_):
-    results = []
-    total_price = 0
-    dish_images = []
+    ...
+```
 
-    for fname in sorted(os.listdir(dish_crop_dir)):
-        if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
-            continue
+### 🖼️ Đầu ra:
+- Thư mục `dishes_cropped/` chứa các món đã tách.
+- Giao diện Gradio gồm:
+  - Thư viện ảnh các món.
+  - Danh sách món + giá.
+  - Hóa đơn tổng kết.
 
-        img_path = os.path.join(dish_crop_dir, fname)
-        img = image.load_img(img_path, target_size=(224, 224))
-        img_array = image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0
+---
 
-        pred = cnn_model.predict(img_array, verbose=0)
-        cls_index = np.argmax(pred)
-        cls_name = class_names[cls_index]
-        price = menu.get(cls_name, 0)
-        total_price += price
+## 📂 CẤU TRÚC THƯ MỤC
 
-        results.append((cls_name, price))
-        dish_images.append((Image.open(img_path), f"🍽️ {cls_name} – {price:,} VND"))
+```
+/kaggle/input/
+├── allmodeltrain/
+│   ├── best_food_model.keras
+│   ├── model.pt
+│   └── yolo11n.pt
+├── menuueh/
+│   └── menu.json
+├── foodtestproject/
+│   └── khay_com.jpg
+```
 
-    receipt = "<b>===== 🧾 HÓA ĐƠN =====</b><br>"
-    for name, price in results:
-        receipt += f"<div style='display:flex; justify-content:space-between;'><span>{name}</span><span>{price:,} VND</span></div><br>"
-    receipt += "<hr><b>TỔNG TIỀN PHẢI TRẢ: {:,} VND</b>".format(total_price)
+---
 
-    if dish_images:
-        imgs, labels = zip(*dish_images)
-    else:
-        imgs, labels = [], []
+## 🧾 MẪU FILE `menu.json`
 
-    return list(imgs), "\n".join(labels), receipt
+```json
+{
+  "cahukho": 12000,
+  "canhcai": 8000,
+  "canhchua": 9000,
+  "com": 5000,
+  "dauhusotca": 10000,
+  "gachien": 15000,
+  "raumuongxao": 7000,
+  "thitkho": 11000,
+  "thitkhotrung": 13000,
+  "trungchien": 6000
+}
+```
 
-# Giao diện Gradio
-custom_theme = gr.themes.Soft(primary_hue="emerald", secondary_hue="gray")
+---
 
-demo = gr.Interface(
-    fn=process_all_dishes,
-    inputs=gr.Button("📤 NHẬN DIỆN TẤT CẢ MÓN", elem_classes="btn-primary"),
-    outputs=[
-        gr.Gallery(label="📷 Ảnh món ăn đã phát hiện", columns=3, height="auto"),
-        gr.Textbox(label="📋 Danh sách món và giá", lines=6),
-        gr.HTML(label="🧾 Hóa đơn tổng kết")
-    ],
-    title="🥗 HỆ THỐNG NHẬN DIỆN MÓN ĂN CĂN TIN",
-    description="🚀 Dự án nhận diện các món ăn từ khay bằng YOLOv8 & phân loại bằng CNN. Tự động tính tiền dựa trên file <code>menu.json</code>.",
-    theme=custom_theme,
-    live=False
-)
+## ✅ YÊU CẦU
 
-demo.launch(debug=False, share=True)
+| Thư viện         | Phiên bản khuyến nghị |
+|------------------|------------------------|
+| ultralytics      | >=8.0.100              |
+| tensorflow       | >=2.10.0               |
+| opencv-python    | >=4.7.0                |
+| pillow           | >=9.0.0                |
+| gradio           | >=4.0.0                |
+| numpy            | >=1.23                 |
+
+---
+
+## 📬 LIÊN HỆ
+
+Mọi thắc mắc vui lòng liên hệ qua GitHub hoặc bình luận trực tiếp trên Kaggle Notebook.
+
+---
+
+**Chúc bạn triển khai thành công!** 🎉
